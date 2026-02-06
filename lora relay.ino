@@ -85,6 +85,7 @@ const lmic_pinmap lmic_pins = {
 };
 
 static osjob_t sendjob;
+bool lmicTxDone = false;
 
 // ---------------- Session Helpers ----------------
 String profileKey(const char* key) {
@@ -139,8 +140,34 @@ bool restoreSession() {
 
 // ---------------- LMIC Send ----------------
 void do_send(osjob_t*) {
+  if (LMIC.opmode & OP_TXRXPEND) {
+    Serial.println("LMIC busy (OP_TXRXPEND)");
+    return;
+  }
+
   LMIC_setTxData2(1, rxBuf, rxLen, 0);
+  lmicTxDone = false;
   Serial.println("LMIC uplink queued");
+}
+
+void printDownlink() {
+  if (LMIC.dataLen == 0) {
+    Serial.println("No downlink payload");
+    return;
+  }
+
+  Serial.print("Downlink bytes: ");
+  Serial.println(LMIC.dataLen);
+  Serial.print("Downlink HEX: ");
+
+  for (uint8_t i = 0; i < LMIC.dataLen; ++i) {
+    if (LMIC.frame[LMIC.dataBeg + i] < 0x10) {
+      Serial.print('0');
+    }
+    Serial.print(LMIC.frame[LMIC.dataBeg + i], HEX);
+    Serial.print(' ');
+  }
+  Serial.println();
 }
 
 // ---------------- LMIC Events ----------------
@@ -153,23 +180,16 @@ void onEvent(ev_t ev) {
     LMIC_setLinkCheckMode(0);
     saveSession();
     do_send(nullptr);
-    LMIC.rxDelay = savedLMICState.rxDelay; // necessary to receive downlink
-
-    // Restore current radio state
-    //LMIC.channelMap = savedLMICState.channelMap;
-    //LMIC.datarate = savedLMICState.datarate;
-    //LMIC.txpow = savedLMICState.txpow;
-    //LMIC.initBandplanAfterReset = savedLMICState.initBandplanAfterReset;
-
-    // Restore downlink confirmation state (critical for ACK mechanism)
-    LMIC.dnConf = savedLMICState.dnConf; // necessary 
-    LMIC.lastDnConf = savedLMICState.lastDnConf;
   }
 
   if (ev == EV_TXCOMPLETE) {
     Serial.println("LMIC TX complete");
+    if (LMIC.txrxFlags & TXRX_ACK) {
+      Serial.println("ACK received");
+    }
+    printDownlink();
     saveSession();
-    state = STATE_SWITCH_TO_P2P;
+    lmicTxDone = true;
   }
 }
 
@@ -227,6 +247,11 @@ void loop() {
         rxBuf[rxLen++] = LoRa.read();
       }
 
+      if (rxLen < 2) {
+        Serial.println("P2P packet too short");
+        return;
+      }
+
       uint8_t profileId = rxBuf[0];
       if (profileId >= PROFILE_COUNT) {
         Serial.println("Invalid profile ID");
@@ -253,6 +278,10 @@ void loop() {
 
   if (state == STATE_LMIC_RUN) {
     os_runloop_once();
+
+    if (lmicTxDone) {
+      state = STATE_SWITCH_TO_P2P;
+    }
   }
 
   if (state == STATE_SWITCH_TO_P2P) {
@@ -266,7 +295,6 @@ void loop() {
 
   delay(1);
 }
-
 
 
 
